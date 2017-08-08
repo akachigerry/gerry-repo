@@ -181,7 +181,6 @@ pool1 = Pool(8)
 hap1RatioFile1 = pool1.map(append_part, hap1RatioFile1)
 pool1.close()
 pool1.join()
-
 #select only lines for which gene id was appended
 hap1RatioFile1 = [x for x in hap1RatioFile1 if len(x) == 13]
 
