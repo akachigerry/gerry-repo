@@ -1,8 +1,10 @@
 #!/usr/bin/python
+from __future__ import division
 import sys, getopt
-import numpy
+import numpy as np
 import scipy
 from scipy.stats import beta
+from math import gamma
 import itertools
 from multiprocessing.pool import Pool
 from functools import partial
@@ -10,73 +12,69 @@ import copy_reg
 from multiprocessing.dummy import Pool as ThreadPool 
 import operator 
 
-def main(argv):
+def input_arg(argv):
     ASEReadcountFile = ''
     gff = ''
     phasedGenotypeFile = ''
-    sampleName = ''
+    sampleNames = ''
+    numProcesses = ''
     AllGenes = ''
-    ASEgenes = ''
     try:
-	opts, args = getopt.getopt(argv,"hr:g:p:s:", ["output1=", "output2="])
+	opts, args = getopt.getopt(argv,"hr:g:p:s:m:ms:", "output=")
     except getopt.GetoptError, err:
 	print str(err)
 	usage()
 	sys.exit(2)
-    for opt, arg in opts:
-	if opt == '-h':
-	    print 'ASEstimator.py -r <ASEReadcountFile> -g <gff> -p <phasedGenotypeFile> -s <sampleName> --output1 <AllGenes> --output2 <ASEgenes>'
-	    sys.exit()
-	elif opt in ("-r"):
-	    ASEReadcountFile = arg
-	elif opt in ("-g"):
-	    gff = arg
-	elif opt in ("-p"):
-	    phasedGenotypeFile = arg
-	elif opt in ("-s"):
-	    sampleName = arg
-	elif opt in ("--output1"):
-	    AllGenes = arg
-	elif opt in ("--output2"):
-	    ASEgenes = arg
-    print 'Read count over SNP loci shown in "', ASEReadcountFile
-    print 'Gene annotation file is "', gff
-    print 'Phased SNP data is "', phasedGenotypeFile
-    print 'Sample is "', sampleName
-    print 'ASE estimation in all genes is "', AllGenes
-    print 'ASE estimation in imbalanced genes is "', ASEgenes
-if __name__=="__main__":
-   main(sys.argv[1:])	
-readCounts = open(sys.argv[2],'r')
-gff = open(sys.argv[4],'r')
-phasedGenotype = open(sys.argv[6],'r')
-geneid = None    
-hapSegment = None
-disparitycount = None
-paritycount = None
-sampleName = sys.argv[8]
-AllGenes = sys.argv[10]
-ASEgenes = sys.argv[12] 
-countlines = readCounts.readlines()
+    if sys.argv[7] == "-m":
+    	for opt, arg in opts:
+		if opt == '-h':
+	    		print 'ASEstimator.py -r <ASEReadcountFile> -g <gff> -p <phasedGenotypeFile> -m <numberPerTreatmentSet> -ms <sampleName> --output <AllGenes>'
+	    		sys.exit()
+		elif opt in ("-r"):
+	    		ASEReadcountFile = arg
+		elif opt in ("-g"):
+	    		gff = arg
+		elif opt in ("-p"):
+	    		phasedGenotypeFile = arg
+		elif opt in ("-m"):
+			numberPerTreatmentSet = arg
+		elif opt in ("-ms"):
+	    		sampleName = arg
+		elif opt in ("--output"):
+	    		AllGenes = arg
+	
+    	print 'Read count over SNP loci shown in', ASEReadcountFile
+    	print 'Gene annotation file is', gff
+    	print 'Phased SNP data is', phasedGenotypeFile
+	print 'Number per treatment set in multiple sample mode is', numberPerTreatmentSet
+    	print 'Samples are', [x for x in sampleName.split(',')]
+    	print 'ASE estimation in all genes is', AllGenes
 
-#find gene location of each SNP locus
-def extractsamplename(phasedGenotype, sampleName):
-	for line in phasedGenotype:
-		if '#CHROM' in line:
-			genotypeLine1 = line.strip().split('\t')
-			if sampleName in line:			
-	     			y = genotypeLine1.index(sampleName)
-			else:
-				raise ValueError ('No genotype data for sample. Please provide sample genotype information in vcf file')
-			break
-	phasedGenotype.seek(0)
-	return y;
-f = extractsamplename(phasedGenotype, sampleName)
-f = int(f)
-genotypeline = phasedGenotype.readlines()
-genotypeline1 = [i for i in genotypeline if i[0] != '#']
-countlines1 = [i for i in countlines if i[0] != 'c']
+    if sys.argv[7] == "-s":
+    	for opt, arg in opts:
+		if opt == '-h':
+	    		print 'ASEstimator.py -r <ASEReadcountFile> -g <gff> -p <phasedGenotypeFile> -s <sampleName> --output <AllGenes>'
+	    		sys.exit()
+		elif opt in ("-r"):
+	    		ASEReadcountFile = arg
+		elif opt in ("-g"):
+	    		gff = arg
+		elif opt in ("-p"):
+	    		phasedGenotypeFile = arg
+		elif opt in ("-s"):
+	    		sampleName = arg
+		elif opt in ("--output"):
+	    		AllGenes = arg
+	
+    	print 'Read count over SNP loci shown in', ASEReadcountFile
+    	print 'Gene annotation file is', gff
+    	print 'Phased SNP data is', phasedGenotypeFile
+    	print 'Sample is', sampleName
+    	print 'ASE estimation in all genes is', AllGenes
 
+input_arg(sys.argv[1:])
+
+#define all sub-functions executed using multiprocessing outside the main function to avoid pickle error
 def lnsplit(ln):
 	b = ln.strip().split('\t')
 	return b;
@@ -84,76 +82,6 @@ def lnsplit(ln):
 def lnsplit1(ln1):
 	d = ln1.strip().split('\t')[0:8]
 	return d;
-
-pool = ThreadPool(8)
-genotypeLine2 = pool.map(lnsplit, genotypeline1)
-genotypeLine2 = [x for x in genotypeLine2 if x != ['']]
-
-hap1RatioLine = pool.map(lnsplit1, countlines1)
-hap1RatioLine = [x for x in hap1RatioLine if x != ['']]
-
-a = 0
-hap1RatioFile = []
-for i in range(0, len(genotypeLine2)):       	
-       	if i < (len(genotypeLine2))-1:
-		#Select heterozygous loci and arrange read counts according to haplotypes
-		if genotypeLine2[i][0] == hap1RatioLine[a][0] and int(genotypeLine2[i][1]) > int(hap1RatioLine[a][1]):
-			print "Warning!", hap1RatioLine[a][0], "position", hap1RatioLine[a][1], "not found in vcf file"
-			a += 1
-			i -= 1
- 			continue
-		if genotypeLine2[i][0] != hap1RatioLine[a][0] or genotypeLine2[i][1] != hap1RatioLine[a][1]:
-			continue
-		if genotypeLine2[i][0] == hap1RatioLine[a][0] and genotypeLine2[i][1] == hap1RatioLine[a][1] and genotypeLine2[i][f].strip().split(':')[0] == '0/1' \
-				and float(hap1RatioLine[a][5]) / int(hap1RatioLine[a][7]) >= 0.1 or float(hap1RatioLine[a][5]) / int(hap1RatioLine[a][7]) <= 0.9:
-			if '-' not in genotypeLine2[i][f].strip().split(':')[1]:
-				a += 1
-				continue
-			elif '-' in genotypeLine2[i][f].strip().split(':')[1] and \
-						genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1] == '1':
-					refcount = float(hap1RatioLine[a][5])
-					altcount = float(hap1RatioLine[a][6])
-					totcount = int(hap1RatioLine[a][7])
-					hap1Ratio = refcount / totcount
-					refratio = refcount / totcount
-					hapSegment = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[0]
-					hap = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1]
-					hap1RatioLine1 = hap1RatioLine[a]
-					hap1RatioLine1.append(hap)		
-					hap1RatioLine1.append(hapSegment)
-					hap1RatioLine1.append(str(hap1Ratio))
-					hap1RatioLine1.append(str(refratio))
-					hap1RatioFile.append('\t'.join(hap1RatioLine1))
-					a += 1
-					continue		
-			elif '-' in genotypeLine2[i][f].strip().split(':')[1] and \
-						genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1] == '2':
-					refcount = float(hap1RatioLine[a][5])
-					altcount = float(hap1RatioLine[a][6])
-					totcount = int(hap1RatioLine[a][7])
-					hap1Ratio1 = altcount / totcount
-					refratio1 = refcount / totcount
-					hapSegment = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[0]
-					hap = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1]
-					hap1RatioLine1 = hap1RatioLine[a]
-					hap1RatioLine1.append(hap)
-					hap1RatioLine1.append(hapSegment)
-					hap1RatioLine1.append(str(hap1Ratio1))
-					hap1RatioLine1.append(str(refratio1))
-					hap1RatioFile.append('\t'.join(hap1RatioLine1))
-					a += 1
-					continue
-		if genotypeLine2[i][0] == hap1RatioLine[a][0] and genotypeLine2[i][1] == hap1RatioLine[a][1] and \
-				genotypeLine2[i][f].strip().split(':')[0] != '0/1' and refcount / totcount < 0.1 or refcount / totcount > 0.9:	
-			a += 1
-			continue	
-									
-#Find gene positions of SNP loci
-gffInp = gff.readlines()
-gffInp1 = pool.map(lnsplit, gffInp)
-gffInp1 = [x for x in gffInp1 if '#' not in x[0]]
-gffInp1 = sorted(gffInp1)
-hap1RatioFile1 = pool.map(lnsplit, hap1RatioFile)
 
 #Apend gene Id from gff
 def append_gene(x, gfffile):
@@ -163,7 +91,7 @@ def append_gene(x, gfffile):
 				x.append(gfffile[i][-1].split('ID=')[-1].split(';')[0])
 				break
 	return x;
-
+	
 #pickle partial object for compatibility with python v2.6
 def _reconstruct_partial(f, args, kwds):
 	return partial(f, *args, **(kwds or {}))
@@ -171,41 +99,15 @@ def _reconstruct_partial(f, args, kwds):
 def _reduce_partial(p):
 	return _reconstruct_partial, (p.func, p.args, p.keywords)
 
-copy_reg.pickle(partial, _reduce_partial)
-
-#creat partial of append_gene
-append_part = partial(append_gene, gfffile=gffInp1)
-
-#Now append gene from gff to relevant lines of haplotype file
-pool1 = Pool(8)
-hap1RatioFile1 = pool1.map(append_part, hap1RatioFile1)
-pool1.close()
-pool1.join()
-#select only lines for which gene id was appended
-hap1RatioFile1 = [x for x in hap1RatioFile1 if len(x) == 13]
-
-#Select haplotypes with at least two SNP loci
-hap1RatioFile2 = [x for i, x in enumerate(hap1RatioFile1) if i < len(hap1RatioFile1)-1 and \
-			(x[9] == hap1RatioFile1[i+1][9] or x[9] == hap1RatioFile1[i-1][9])]
-
-if hap1RatioFile1[-2][9] != hap1RatioFile1[-1][9]:
-	 hap1RatioFile2 = hap1RatioFile2
-
-if hap1RatioFile1[-2][9] == hap1RatioFile1[-1][9]:
-	 hap1RatioFile2.append(hap1RatioFile1[-1])
-
-#Calculate variance where there's a single exon per haplotype or
-#inter-exon variance when there's more than one
-
 exonvarlst = []
 x1 = 0
 x = 0
 z = 0
 def hap_var(lst):
-    return numpy.std(lst);
+    return np.std(lst);
 
 def hap_av(lst):
-    return numpy.mean(lst);
+    return np.mean(lst);
 
 def hap_lst(hapfile):
 	hrlst = []
@@ -224,26 +126,26 @@ def hap_lst(hapfile):
 		i = z
 		if i == len(hapfile)-1:
 			break
-        	if i < len(hapfile)-1:
+       		if i < len(hapfile)-1:
 			#collect haplotype ratios per locus in a list
-                	while hapfile[x][0] == hapfile[i+1][0] and hapfile[x][9] == hapfile[i+1][9]:
-                    		hrlst.append(hapfile[i][10])
-                    		i += 1
-                    		z += 1
+       	        	while hapfile[x][0] == hapfile[i+1][0] and hapfile[x][9] == hapfile[i+1][9]:
+       	            		hrlst.append(hapfile[i][10])
+       	            		i += 1
+       	            		z += 1
 				if i == len(hapfile)-1:
 					break
 			hrlst.append(hapfile[i][10])
 			#aggregate list of haplotype ratio list for all haplotpye of the transcriptome
-                	hapomeratiolst.append(hrlst)
+       	        	hapomeratiolst.append(hrlst)
 			hapstrt.append(str(x))
 			while x <= i and i < len(hapfile)-1:
 				poslst.append(hapfile[x][1])
-                                poslst1.append(hapfile[x+1][1])
+       	                        poslst1.append(hapfile[x+1][1])
 				x += 1
 				cnt += 1
 			while x <= i and i == len(hapfile)-1: 
 				poslst.append(hapfile[x][1])
-                                poslst1.append(hapfile[i][1])
+       	                        poslst1.append(hapfile[i][1])
 				x += 1
 				cnt += 1
 			#create list of first and last positions of each haplotype of the transcriptome 		
@@ -251,408 +153,832 @@ def hap_lst(hapfile):
 			lstposlst1.extend((poslst1[0], poslst1[-1], cnt))
 			lstposlst2.append(lstposlst)
 			lstposlst3.append(lstposlst1)
-                	x = i
-                	x += 1
-                	z += 1
+       	        	x = i
+       	        	x += 1
+       	        	z += 1
 			lstposlst = []
 			lstposlst1 = []
 			poslst = []
 			poslst1 = []
 			hrlst = []
 			cnt = 0
-	return {'lstOfHapRatiolsts': hapomeratiolst, 'lstOfhapStrtEnd1': lstposlst2, 'lstOfhapStrtEnd2': lstposlst3, 'hapStrtlnPos': hapstrt};
+	return {'lstOfHapRatiolsts': hapomeratiolst, 'lstOfhapStrtEnd1': lstposlst2, 'lstOfhapStrtEnd2': \
+				lstposlst3, 'hapStrtlnPos': hapstrt};
 
-hapratiolst = hap_lst(hap1RatioFile2)
-lstofhapratiolst = [[float(i) for i in x] for x in hapratiolst['lstOfHapRatiolsts']]
+#mark exon ends
+def mult_exonhap(y, hapfile):
+	for x in xrange(0, len(hapfile)-2):
+		if x < len(hapfile)-1:
+			if y[0] == hapfile[x][0] and len(hapfile[x]) == 18 and int(hapfile[x][1]) > int(y[3]) \
+					and int(hapfile[x][1]) < int(y[4]) and int(hapfile[x+1][1]) > int(y[4]):
+				hapfile[x].append('exonend')
+				return hapfile[x];
 
-hapratiovarlst = pool.map(hap_var, lstofhapratiolst)	
+#replace lines in the full hapfile with equivalent lines in partial hapfile to which 'exonend' annotation has been appended 
+def replace_ln(x, y):
+	for i in xrange(0, len(y)-1):
+		if (y[i][0] != x[0] or y[i][1] != x[1]) and int(y[i][17]) < int(x[-1]):
+			continue
+		if (y[i][0] != x[0] or y[i][1] != x[1]) and int(y[i][17]) > int(x[-1]):
+			return x;
+		if y[i][0] == x[0] and y[i][1] == x[1]:
+			return y[i];
+		else:
+			return x;
+	
 
-#attach hap ratio variance of each haplotype to its constituent loci
-count = 0
-d = 0
-z = 0
-for i in xrange(0, len(hap1RatioFile2)):
-	i = z
-	if i < len(hap1RatioFile2)-1:
-		while hap1RatioFile2[d][0] == hap1RatioFile2[i+1][0] and hap1RatioFile2[d][9] == hap1RatioFile2[i+1][9]:
-			hap1RatioFile2[i].append(str(hapratiovarlst[count]))
-			hap1RatioFile2[i].append(str(count))
-			i += 1
+def prime_fun(sampleName):
+	readCounts = open(sys.argv[2],'r')
+	gff = open(sys.argv[4],'r')
+	phasedGenotype = open(sys.argv[6],'r')
+	geneid = None    
+	hapSegment = None
+	disparitycount = None
+	paritycount = None
+	
+	AllGenes = sys.argv[10]
+	countlines = readCounts.readlines()
+
+	#find gene location of each SNP locus
+	def extractsamplenameidx(phasedGenotype, sampleName):
+		for line in phasedGenotype:
+			if '#CHROM' in line:
+				genotypeLine1 = line.strip().split('\t')
+				if sampleName in line:			
+	     				y = genotypeLine1.index(sampleName)
+				else:
+					raise ValueError ('No genotype data for sample. Please provide sample genotype \
+								information in vcf file')
+				break
+		phasedGenotype.seek(0)
+		return y;
+	f = extractsamplenameidx(phasedGenotype, sampleName)
+	f = int(f)
+	genotypeline = phasedGenotype.readlines()
+	genotypeline1 = [i for i in genotypeline if i[0] != '#']
+	countlines1 = [i for i in countlines if i[0] != 'c']
+	
+	
+	pool = ThreadPool(4)
+	genotypeLine2 = pool.map(lnsplit, genotypeline1)
+	genotypeLine2 = [x for x in genotypeLine2 if x != ['']]
+
+	hap1RatioLine = pool.map(lnsplit1, countlines1)
+	hap1RatioLine = [x for x in hap1RatioLine if x != ['']]
+
+	a = 0
+	hap1RatioFile = []
+	for i in range(0, len(genotypeLine2)):       	
+	       	if i < (len(genotypeLine2))-1:
+			#Select heterozygous loci and arrange read counts according to haplotypes
+			if genotypeLine2[i][0] == hap1RatioLine[a][0] and int(genotypeLine2[i][1]) > int(hap1RatioLine[a][1]):
+				print "Warning!", hap1RatioLine[a][0], "position", hap1RatioLine[a][1], "not found in vcf file"
+				a += 1
+				i -= 1
+	 			continue
+			if genotypeLine2[i][0] != hap1RatioLine[a][0] or genotypeLine2[i][1] != hap1RatioLine[a][1]:
+				continue
+			if genotypeLine2[i][0] == hap1RatioLine[a][0] and genotypeLine2[i][1] == hap1RatioLine[a][1] and genotypeLine2[i][f].strip().split(':')[0] == '0/1' \
+					and float(hap1RatioLine[a][5]) / int(hap1RatioLine[a][7]) >= 0.1 or float(hap1RatioLine[a][5]) / int(hap1RatioLine[a][7]) <= 0.9:
+				if '-' not in genotypeLine2[i][f].strip().split(':')[1]:
+					a += 1
+					continue
+				elif '-' in genotypeLine2[i][f].strip().split(':')[1] and \
+							genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1] == '1':
+						refcount = float(hap1RatioLine[a][5])
+						altcount = float(hap1RatioLine[a][6])
+						totcount = int(hap1RatioLine[a][7])
+						hap1Ratio = refcount / totcount
+						refratio = refcount / totcount
+						hapSegment = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[0]
+						hap = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1]
+						hap1RatioLine1 = hap1RatioLine[a]
+						hap1RatioLine1.append(hap)		
+						hap1RatioLine1.append(hapSegment)
+						hap1RatioLine1.append(str(hap1Ratio))
+						hap1RatioLine1.append(str(refratio))
+						hap1RatioFile.append('\t'.join(hap1RatioLine1))
+						a += 1
+						continue		
+				elif '-' in genotypeLine2[i][f].strip().split(':')[1] and \
+							genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1] == '2':
+						refcount = float(hap1RatioLine[a][5])
+						altcount = float(hap1RatioLine[a][6])
+						totcount = int(hap1RatioLine[a][7])
+						hap1Ratio1 = altcount / totcount
+						refratio1 = refcount / totcount
+						hapSegment = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[0]
+						hap = genotypeLine2[i][f].strip().split(':')[1].split(',')[0].split('-')[1]
+						hap1RatioLine1 = hap1RatioLine[a]
+						hap1RatioLine1.append(hap)
+						hap1RatioLine1.append(hapSegment)
+						hap1RatioLine1.append(str(hap1Ratio1))
+						hap1RatioLine1.append(str(refratio1))
+						hap1RatioFile.append('\t'.join(hap1RatioLine1))
+						a += 1
+						continue
+			if genotypeLine2[i][0] == hap1RatioLine[a][0] and genotypeLine2[i][1] == hap1RatioLine[a][1] and \
+					genotypeLine2[i][f].strip().split(':')[0] != '0/1' and refcount / totcount < 0.1 or refcount / totcount > 0.9:	
+				a += 1
+				continue	
+									
+	#Find gene positions of SNP loci
+	gffInp = gff.readlines()
+	gffInp1 = pool.map(lnsplit, gffInp)
+	gffInp1 = [x for x in gffInp1 if '#' not in x[0]]
+	gffInp1 = sorted(gffInp1)
+	hap1RatioFile = pool.map(lnsplit, hap1RatioFile)
+	pool.close()
+	pool.join()
+
+	copy_reg.pickle(partial, _reduce_partial)
+	#creat partial of append_gene
+	append_part = partial(append_gene, gfffile=gffInp1)
+
+	#Now append gene from gff to relevant lines of haplotype file
+	pool1 = Pool(4)
+	hap1RatioFile = pool1.map(append_part, hap1RatioFile)
+	pool1.close()
+	pool1.join()
+
+	#select only lines for which gene id was appended
+	hap1RatioFile1 = [x for x in hap1RatioFile if len(x) == 13]
+
+	#Select haplotypes with at least two SNP loci
+	hap1RatioFile2 = [x for i, x in enumerate(hap1RatioFile1) if i < len(hap1RatioFile1)-1 and \
+				(x[9] == hap1RatioFile1[i+1][9] or x[9] == hap1RatioFile1[i-1][9])]
+
+	if hap1RatioFile1[-2][9] != hap1RatioFile1[-1][9]:
+		 hap1RatioFile2 = hap1RatioFile2
+
+	if hap1RatioFile1[-2][9] == hap1RatioFile1[-1][9]:
+		 hap1RatioFile2.append(hap1RatioFile1[-1])
+
+	#calculate allele ration variance within haplotype
+	hapratiolst = hap_lst(hap1RatioFile2)
+	lstofhapratiolst = [[float(i) for i in x] for x in hapratiolst['lstOfHapRatiolsts']]
+	hapratiovarlst = pool.map(hap_var, lstofhapratiolst)	
+
+	#attach to each loci hap ratio variance as measure of library prep-induced variation in haplotype ratio variance
+	#haplotype count was also attached at each locus 
+	count = 0
+	d = 0
+	z = 0
+	for i in xrange(0, len(hap1RatioFile2)):
+		i = z
+		if i < len(hap1RatioFile2)-1:
+			while hap1RatioFile2[d][0] == hap1RatioFile2[i+1][0] and hap1RatioFile2[d][9] == hap1RatioFile2[i+1][9]:
+				hap1RatioFile2[i].append(hapratiovarlst[count])
+				hap1RatioFile2[i].append(count)
+				i += 1
+				z += 1
+				if i == len(hap1RatioFile2)-1:
+						break
+			hap1RatioFile2[i].append(hapratiovarlst[count])
+			hap1RatioFile2[i].append(count)
+			#add count as index of haplotype list of transcriptome
 			z += 1
-			if i == len(hap1RatioFile2)-1:
-					break
-		hap1RatioFile2[i].append(str(hapratiovarlst[count]))
-		hap1RatioFile2[i].append(str(count))
-		#add count as index of haplotype list of transcriptome
-		z += 1
-		count += 1
-		d = z
+			count += 1
+			d = z
 
-#define exon variance for cases of haplotype(s) within exon
+	#if exon(s) is within haplotype
+	#select subset of snps within a haplotype containing one or more full exons				
+	#append snp index, hap start, end and size values for snps of haplotypes ecompassing more than a single exon and calculate their exon averages
+	hap1RatioFile3 = [x+[hapratiolst['lstOfhapStrtEnd1'][int(x[-1])][0], hapratiolst['lstOfhapStrtEnd1'][int(x[-1])][1], idx] for idx, x in enumerate(hap1RatioFile2)]
+	
+	gffInp2 = [x for x in gffinp1 if x[2] != 'gene' and x[2] != 'mRNA']					
+				
+	mult_exonhappt = partial(mult_exonhap, hapfile=hap1RatioFile3)
+	pool1 = Pool(4)
+	hap1RatioFile4 = pool1.map(mult_exonhappt, gffInp2)
+	pool1.close()
+	pool1.join()
+
+	#pick only lines with 'exonend' appended to form a partial hapfile
+	hap1RatioFile4 = [x for x in hap1RatioFile4 if x != None]
+			
+	replace_lnpt = partial(replace_ln, y=hap1RatioFile4)
+	pool1 = Pool(4)
+	hap1RatioFile4 = pool1.map(replace_lnpt, hap1RatioFile3)
+	pool1.close()
+	pool1.join()
+	hap1RatioFile4 = [x for x in hap1RatioFile4 if x != None]
+	
+	gffInp2 = [x+[idx] for idx, x in enumerate(gffInp2)] 
+					
+	#determine if there's more than one exon per haplotype and calculate exon averages
+	j = 0
+	k = 0
+	#exon number tracker
+	cnt = 1
+	intraexonvarlst = []
+	ratioavlst = []
+	exonratio = []
+	for q in xrange(0, len(hap1RatioFile4)-2):
+		q = j
+		k = j
+		if q < len(hap1RatioFile4)-1:			
+			while hap1RatioFile4[q][14] == hap1RatioFile4[q+1][14] and hap1RatioFile4[q+1][-1] != 'exonend':
+				exonratio.append(hap1RatioFile4[q][10])
+				q += 1
+				j += 1
+			if hap1RatioFile4[q][14] == hap1RatioFile4[q+1][14] and hap1RatioFile4[q+1][-1] == 'exonend':
+				exonratio.append(hap1RatioFile4[q+1][10])
+			exonratio = [float(i) for i in exonratio]
+			exonratioav = np.mean(exonratio)
+			ratioavlst.append(exonratioav)
+			intraexonvar = np.std(exonratio)
+			intraexonvarlst.append(intraexonvar)
+	
+			#if next exon is still within haplotype	
+			if q < len(hap1RatioFile4)-2:
+				if hap1RatioFile4[q][14] == hap1RatioFile4[q+2][14]:
+					j += 1
+					cnt += 1
+					exonratio = []
+					continue					
+			while k <= j and cnt > 1:
+				exonratiovar = np.std(ratioavlst) if len(ratioavlst) > 1 else None
+				avintraexonvar = np.mean(intraexonvarlst)
+				exonratiovar1 = (exonratiovar-avintraexonvar) if avintraexonvar <= exonratiovar else 0
+				hap1RatioFile4[k].append(exonratiovar1)
+				k += 1
+			j += 1
+					
+
+	#pick only lines to which inter-exon exon hap ratio variance has been appended
+	hap1RatioFile5 = [x for x in hap1RatioFile4 if x != None]
+
+	replace_lnpt1 = partial(replace_ln, y=hap1RatioFile5)
+	pool1 = Pool(4)
+	hap1RatioFile2 = pool12.map(replace_lnpt1, hap1RatioFile3)
+	pool1.close()
+	pool1.join()
+	hap1RatioFile2 = [x for x in hap1RatioFile2 if x != None]
+	return [hap1RatioFile2, gffInp2];
+
+#for single sample analysis
+if sys.argv[7] == "-s":
+	hap1RatioFile2 = prime_fun(sys.argv[8])[0]
+	gffInp2 = prime_fun(sys.argv[8])[1]
+#for multi-sample analysis
+
+if sys.argv[7] == "-m":
+	samplelst = sys.argv[10].split(',')
+	hap1RatioFile2Suplst = []
+	alltrtset = []
+	#ensure number of sample sets partitioned according to treatment of interest is an integer 
+	#factor of total number of samples
+	numtrtset = sys.argv[8]
+	if (len(samplelst) % numtrtset) != 0:
+		raise ValueError('Total sample size is not a multiple of number of sample sets of treatment')
+	else:
+		#portion samples into subsets containing all instances of a treatment. 
+		#These instances must however be genetically identical 
+		i = 0
+		j = 0
+		for i in samplelst:
+			trtset = []
+			i = j
+			cnt = 0
+			while cnt <= sys.argv[8]:
+				trtset.append(samplelst[j])
+				cnt+=1
+				j+=1
+			alltrtset.append(trtset)
+		for i in xrange(0, len(alltrtset)-1): 
+			pool = ThreadPool(4)
+			run_prime_fun = pool.map(prime_fun, alltrtset[i])
+			hap1RatioFile2lst = [x[0] for x in run_prime_fun]
+			gffInp2 = run_prime_fun[0][1]
+			hap1RatioFile2Suplst.append(hap1RatioFile2lst)
+			gffInp2lstSuplst.append(gffInp2lst)
+
+#define conditions where haplotype exists within exon, a single exon within haplotype and a haplotype spanning exons in two genes
+#standard deviations of allele ratio measures within haplotype calculated as measure of inter-SNV variation in first two cases 
+#while inter-exon variation calculated in the last case to estimate potential influence of gene fusion on allele expression imbalance
 def exon_variance(a, gfffile):
 	q = 0
 	p = 0
 	k = 0
 	hapcnt = 0
+	interhapsegavlst = []
+	intrahapsegvarlst = []
+	hapseg = []
+	a1 = a
+	hapstartpos = np.int_(a1[15])
+	hapendpos = np.int_(a1[16])
+	locusidx = a1[17]
+	geneid = a[12]
+		
 	for y in xrange(0, len(gfffile)):
 		y = p
 		if y == len(gfffile)-1:
 			break
-		if y < len(gfffile)-1:
-                            
-		    if (gfffile[y][2] == 'CDS' and gfffile[y][0] == a[0]) or (gfffile[y][2] == 'five_prime_UTR' and \
-				gfffile[y][0] == a[0]) or (gfffile[y][2] == 'three_prime_UTR' and gfffile[y][0] == a[0]):
-			hapidx = int(a[-1])
-			hapstartpos = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][0])
-			hapendpos = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][1])
-			hapsize = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][-1])
-
-			#if haplotype is contained within exon 
-                	if hapstartpos >= int(gfffile[y][3]) and hapendpos <= int(gfffile[y][4]):
-                       		a.append(a[13])	
-				break
+		if y < len(gfffile)-1 and locusidx < len(hap1RatioFile2)-1:
+	                            
+	    	if gfffile[y][0] == a[0]:
 			#Haplotype spans multiple exons in different genes
-			if gfffile[y][-1].split('ID=')[-1].split('m.')[0] != a[12].split('m.')[0] \
+			if gfffile[y][0] == gfffile[y+1][0] and gfffile[y][-2].split('ID=')[-1].split('m.')[0] != gfffile[y+1][-2].split('ID=')[-1].split('m.')[0] \
 					and hapstartpos < int(gfffile[y][4]) and \
 						hapendpos > int(gfffile[y][4]) \
-					and hapendpos > int(gfffile[y+1][3]) \
-					and hapendpos < int(gfffile[y+1][4]):
-				print "Strange exon arrangement detected in sample. Either a potential fusion between", gfffile[y][-1].split('ID=')[-1].split('.CDS')[0], "and", \
-					a[12], "or the unlikely event of a wrong gene annotation in", a[0] 
-				a.append(a[13])	
-				break
-			##Haplotype spans multiple exons in same genes
-			if hapstartpos < int(gfffile[y][4]) and hapendpos > int(gfffile[y][4]) and hapendpos > int(gfffile[y+1][3]) \
-					and hapendpos < int(gfffile[y+1][4]) and gfffile[y][-1].split('ID=')[-1].split('m.')[0] == a[12].split('m.')[0]:
-				a.append(a[13])	
-				break
-			if hapstartpos < int(gfffile[y][4]) and hapendpos > int(gfffile[y][4]):
-				a.append(a[13])	
-				break
+					and hapendpos > int(gfffile[y+1][3]) and locusidx < len(hap1RatioFile2)-1:
+				print "Strange exon arrangement detected in sample. Either a potential fusion between", gfffile[y][-2].split('ID=')[-1].split('.CDS')[0], "and", \
+					gfffile[y+1][-2].split('ID=')[-1].split('.CDS')[0], "or the unlikely event of a wrong gene annotation in", a[0] 
+				
+				#iterte though lines of count file to the start of the haplotype if line 
+				#exists within the first (5'-end) of both exon annotations with unequal gene ids
+				if int(gfffile[y][3]) <= int(a[1]) <= int(gfffile[y][4]): 
+					for i in xrange(1, locusidx):
+						if i == locusidx:
+							while hap1RatioFile2[locusidx][14] == hap1RatioFile2[locusidx-1][14]:
+								locusidx-=1
+								if locusidx < 1:
+									break	
 
-			#if exon does not intersect in anyway at postions excluding the last line of annotation file 
+					#from the start of the haplotype, compile list of allele ratios of lines up to the end of the first (5'-end) 
+					#of both exon annotatons with unequal gene ids
+					while hap1RatioFile2[locusidx][14] == hap1RatioFile2[locusidx+1][14] and int(hap1RatioFile2[locusidx][1]) <= int(gfffile[y][4]):
+						hapseg.append(float(hap1RatioFile2[locusidx][10]))
+						locusidx += 1
+						if locusidx >= len(hap1RatioFile2)-2:
+							break
+					hapsegav = np.mean(hapseg)
+					hapsegvar = np.std(hapseg)
+					interhapsegavlst.append(hapsegav)
+					intrahapsegvarlst.append(hapsegvar)
+					hapseg = []
+			
+					#from the start of the next (second) exon, compile list of allele ratios of lines of same haplotype up to the end of the second (3'-end) 
+					#of both exon annotatons with unequal gene ids
+					while int(hap1RatioFile2[locusidx][1]) > int(gfffile[y][4]) and int(gfffile[y+1][3]) <= int(hap1RatioFile2[locusidx][1]) <= int(gfffile[y+1][4]) \
+							and hap1RatioFile2[locusidx][14] == hap1RatioFile2[locusidx+1][14]:	
+						hapseg.append(float(hap1RatioFile2[locusidx][10]))
+						locusidx += 1
+						if locusidx >= len(hap1RatioFile2)-2:
+							break
+					hapsegav1 = np.mean(hapseg)
+					hapsegvar1 = np.std(hapseg)
+					interhapsegavlst.append(hapsegav1)
+					intrahapsegvarlst.append(hapsegvar1)
+					hapseg = []
+		
+					interhapsegvar = np.std(interhapsegavlst) if len(interhapsegavlst) > 1 else 0
+					avintrahapsegvar = np.mean(intrahapsegvarlst)
+					realinterhapsegvar = interhapsegvar - avintrahapsegvar if interhapsegvar > avintrahapsegvar else 0
+					a.append(realinterhapsegvar)
+		
+				#iterate though lines of count file to the start of its exon if line 
+				#exists within the second (3'-end) of both exon annotatons with unequal gene ids
+				if int(gfffile[y+1][3]) <= int(a[1]) <= int(gfffile[y+1][4]):
+					while 'exonend' not in hap1RatioFile2[locusidx] and hap1RatioFile2[locusidx][14] == hap1RatioFile2[locusidx-1][14]:
+						locusidx-=1
+						if locusidx < 1:
+							break 
+					locusidx1 = locusidx
+					#from the start of the exon, compile list of lines of same haplotype up to the end of the second (3'-end) 
+					#of both exon annotatons with unequal gene ids
+					if 'exonend' in hap1RatioFile2[locusidx]:
+						locusidx+=1
+					while hap1RatioFile2[locusidx][14] == hap1RatioFile2[locusidx+1][14]:
+						hapseg.append(float(hap1RatioFile2[locusidx][10]))
+						locusidx+=1
+						if locusidx >= len(hap1RatioFile2)-2:
+							break
+					hapsegvar = np.std(hapseg)
+					hapsegav = np.mean(hapseg)
+					intrahapsegvarlst.append(hapsegvar)
+					interhapsegavlst.append(hapsegav)
+					
+					#from end of the first (5'-end) of the exon annotations of unequal gene ids, 
+					#compile list of lines up to the start of this exon and calculate 
+					#intra-hap segment variation and hap segment average of allele ratio measure
+					while hap1RatioFile2[locusidx1][14] == hap1RatioFile2[locusidx1+1][14] and int(hap1RatioFile2[locusidx1][1]) <= int(gfffile[y][4]):
+						hapseg.append(float(hap1RatioFile2[locusidx1][10]))
+						locusidx1+=1
+						if int(hap1RatioFile2[locusidx1][17]) >= len(hap1RatioFile2)-2:
+							break
+					hapsegvar1 = np.std(hapseg)
+					hapsegav1 = np.mean(hapseg)
+					intrahapsegvarlst.append(hapsegvar1)
+					interhapsegavlst.append(hapsegav1)
+						
+					interhapsegvar = np.std(interhapsegavlst) if len(interhapsegavlst) > 1 else 0
+					avintrahapsegvar = np.mean(intrahapsegvarlst)
+					realinterhapsegvar = interhapsegvar - avintrahapsegvar if interhapsegvar > avintrahapsegvar else 0
+					a.append(realinterhapsegvar) if realinterhapsegvar > 0 else realinterhapsegvar 
+					
+			#haplotype is within exon or single exon within haplotype
+			if (hapstartpos > int(gfffile[y][3]) and hapendpos < int(gfffile[y][4])) or \
+					(hapstartpos < int(gfffile[y][3]) and hapendpos > int(gfffile[y][4]) and hapendpos < gfffile[y+1][3]):
+				return a;
+
+			#if exon does not match in anyway at postions excluding the last line of annotation file 
 			if y < len(gfffile)-1 and hapstartpos > int(gfffile[y][3]) and hapendpos > int(gfffile[y][4]) or \
 				hapstartpos < int(gfffile[y][3]) and hapendpos < int(gfffile[y][4]):
 			     p += 1
-			     
+			else:
+				return a;     
 		    else:
 			p += 1
-	return a;	
-					
-exon_varpart = partial(exon_variance, gfffile=gffInp1)
-pool1 = Pool(8)
-hap1RatioFile2 = pool1.map(exon_varpart, hap1RatioFile2)
-pool1.close()
-pool1.join()
-	
-def exon_variance1(b, gfffile):	
-	exoncnt = 1
-	cnt = 1
-	k = 1
-	p = 0
-	nxtsnppos = None
-	exonratiolst = []
-	exonratioavlst = []
-	for y in xrange(0, len(gfffile)):
-		y = p
-		if y == len(gfffile)-1:
-			break
-		if y < len(gfffile)-1:
-			hapidx = int(b[-2]) if len(b) == 16 else int(b[-1])
-			hapstartpos = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][0])
-			hapendpos = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][1])
-			hapsize = int(hapratiolst['lstOfhapStrtEnd1'][hapidx][-1])
-			#if exon(s) is within haplotype
-			if (gfffile[y][2] == 'CDS' or gfffile[y][2] == 'five_prime_UTR' or gffInp1[y][2] == 'three_prime_UTR') and \
-					gfffile[y][0] == b[0] and hapstartpos <= int(gfffile[y][3]) and \
-					hapendpos > int(gfffile[y][4]): 	
-				nxtsnppos = int(b.next()[1])
-                           	if nxtsnppos > int(gfffile[y][4]):                          
-					hapratioav1 = float(b[10])
-				exonratiolst.append(b[10])
-				d = b
-                         	while int(d.next()[1]) <= int(gfffile[y][4]):
-					d = d.next()
-					exonratiolst.append(d[10])
-					hapratioav1 = hap_av(exonratiolst)
-					cnt += 1
-					k += 1	
-				exonratioavlst.append(hapratioav1)	
-                                if nxtsnp < hapendpos:
-					p += 1
-					exoncnt += 1
-					k = 0
-					b = d
-					exonratiolst = []
-					continue
-				#if next SNP is outside current halotype and haplotype has more than one exon within
-                                if hapendpos < nxtsnppos and exoncnt > 1:	
-                                       	stdevtn = hap_var(exonratioavlst)
-					print exonratioavlst	
-					while cnt > 0:
-                                       		b.append(str(stdevtn))
-						b = b.next()
-						cnt -= 1
-					break
-				#if next SNP is outside current halotype and haplotype has only a single exon within	
-                                if hapendpos < nxtsnp and exoncnt == 1:
-                                        stdevtn = hap_var(exonratiolst)
-					while k > 0:
-                                       		b.append(str(stdevtn))
-						b = b.next()
-						k -= 1
-                                        break
-			else:
-				p += 1
-	return b;
+	return a;
 
-exon_varpart1 = partial(exon_variance1, gfffile=gffInp1)
-pool2 = Pool(8)
-hap1RatioFile2 = pool2.map(exon_varpart1, hap1RatioFile2)
-pool2.close()
-pool2.join()
+if sys.argv[7] == "-s":				
+	exon_varpart = partial(exon_variance, gffInp2)
+	pool1 = Pool(4)
+	hap1RatioFile2 = pool1.map(exon_varpart, hap1RatioFile2)
+	pool1.close()
+	pool1.join()
 
-for x in xrange(0, len(hap1RatioFile2)-1):
-	del hap1RatioFile2[x][13:14]
-						   
-print hap1RatioFile2
-                   		
-AllgenesOut = open("Allgenes", 'w+')
-ASEgenesOut = open("ASEgenes", 'w+')
-disparityArray = []
-#Iterate through new hap ratio file and calculate average hap ratio, standard deviation and
-#normalised disparity ratio across each haplotype segment for All genes
-x = 0
-j = 1
-z = 0
-p = 0
-k = 0
-x1 = 0
-a = 0
-v = 0
-cisvarlst = []
-biasvarlst = []
-hap1RatioAvlst = []
-refratiolst = []
-cisproblst = []
-biasproblst = []
-ARPproblst = []
-ARPposteriorlst = []
-biasposteriorlst = []
-cislst = []
-ARPlst = []
-for i in range(0, len(hap1RatioFile2)):	        
-	i = z
-	if i < len(hap1RatioFile2)-1: 	   		
-		hap1Ratiosum = float(hap1RatioFile2[i][10])
-		refratiosum = float(hap1RatioFile2[i][11])
-		while hap1RatioFile2[x][0] == hap1RatioFile2[i+1][0] and hap1RatioFile2[x][9] == hap1RatioFile2[i+1][9]:
-			hap1Ratiosum1 = float(hap1RatioFile2[i+1][10])
-			refratiosum1 = float(hap1RatioFile1[i+1][11])
-			hap1Ratiosum = hap1Ratiosum + hap1Ratiosum1
-			refratiosum = refratiosum + refratiosum1
-			hap1RatioAv = hap1Ratiosum / (j+1)
-			refratioAv = refratiosum / (j+1)
-			z += 1
-	     		i += 1
-			j += 1
-                        
-		hap1RatioAvlst.append(str(hap1RatioAv))
-		refratiolst.append(str(refratioAv))
-		sqdev = 0
-		sqdev2 = 0
-		n = 1
-		while x <= i:
-			dev = float(hap1RatioFile2[x][10]) - float(hap1RatioAvlst[k])
-			dev1 = float(hap1RatioFile2[x][11]) - float(refratiolst[k])
-			sqdev1 = dev**2
-			sqdev3 = dev1**2
-			sqdev = sqdev + sqdev1
-			sqdev2 = sqdev2 + sqdev3
-			var = sqdev/n
-			var1 = sqdev2/n
-			stdev = var**0.5
-			stdev2 = var1**0.5
-			n += 1
-			x += 1
-		x = x1
-		while x <= i:
-                       	cisvarlst.append(str(stdev))
-                       	biasvarlst.append(str(stdev2))
-	        	x += 1
-		x = x1
+hap1RatioFile2Suplst1 = []
+if sys.argv[7] == "-m":
+	exon_varpart = partial(exon_variance, gffInp2)
+	for x in xrange(0, len(hap1RatioFile2Suplst)-1):
+		pool = ThreadPool(4)
+		pool1 = Pool(4)
+		def sublst_fn(hapfile):
+			return [pool1.map(exon_varpart, hapfile)];	
+		hap1RatioFile2lst = pool.map(sublst_fn, hap1RatioFile2Suplst[x])
+		hap1RatioFile2Suplst1.append(hap1RatioFile2lst)
+	del hap1RatioFile2Suplst
+	del hap1RatioFile2lst
+	pool1.close()
+	pool1.join()
 		
-		while x <= i:
-			refcount = float(hap1RatioFile2[x][5])
-			altcount = float(hap1RatioFile2[x][6])
-			totcount = int(hap1RatioFile2[x][7])
-			cisvar = float(cisvarlst[x])
-			biasvar = float(biasvarlst[x])
-			exonvar = float(exonvarlst[v])
-			cisprob = float(refcount - altcount)/int(refcount+(2*refcount*cisvar)) if refcount/totcount >= 0.5 \
-					else float(altcount - refcount)/int(altcount+(2*altcount*cisvar))
-			biasprob = float(refcount - altcount)/int(refcount+(2*refcount*biasvar)) if refcount/totcount >= 0.5 \
-					else float(altcount - refcount)/int(altcount+(2*altcount*biasvar))
-			ARPprob = float(refcount - altcount)/int(refcount+(2*refcount*exonvar)) if refcount/totcount >= 0.5 \
-					else float(altcount - refcount)/int(altcount+(2*altcount*exonvar))
-			cisproblst.append(str(cisprob))
-			biasproblst.append(str(biasprob))
-			ARPproblst.append(str(ARPprob))
-			x += 1
-		cislst.append(cisproblst)
-		ARPlst.append(ARPproblst)	
-		x -= 1
-		if x == i and hap1RatioFile2[i][9] != hap1RatioFile2[i+1][9] and hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]:
-			hap1RatioFile2[i].append(str(hap1RatioAv))
+def prime_fun2(hapratio):		
+	#determine frequency of reference counts greater than alternate counts
+	#and find its proportion in a set of (imbalanced) loci with disparity count of at least 1
+	maxrefcnt = 1
+	maxaltcnt = 1
+	maxreflst = []
+	maxaltlst = []
+	for x in xrange(0, len(hapratio)-1):
+		#calculate refernce to alternate count ratio for cases of higher reference allele count
+		refcnt = hapratio[x][5]
+		altcnt = hapratio[x][6]
+		if hapratio[x][5] > hapratio[x][6]:
+			maxreffold = float(refcnt)/int(altcnt)
+			maxreflst.append(maxreffold)
+			maxrefcnt += 1
+		#calculate alternate to reference count ratio for cases of higher alternate allele count
+		if hapratio[x][6] > hapratio[x][5]:
+			maxaltfold = float(altcnt)/int(refcnt)
+			maxaltlst.append(maxaltfold)
+			maxaltcnt += 1
+	maxrefprop = maxrefcnt/maxaltcnt
+	#average of maxreffold and maxaltfold
+	avreffold = np.mean(maxreflst)
+	avaltfold = np.mean(maxaltlst)
+	refabundperloc = (avreffold/avaltfold)*maxrefprop
+	
+		
+	#Assemble inter-SNV standard deviation of each haplotype of the transcriptome in a list and determine limits of this list. 
+	#The inter-SNV deviations were used to estimate potential influence of library preparation to allele ratios while its limits
+	#were applied to delineation of estimated range of allele ratio measures under a model of no ASE.
+	interlocvarlst = [float(x[13]) for x in hapratio]
+	maxinterlocvar = max(interlocvarlst)
+	mininterlocvar = min(interlocvarlst)
+	
+	#estimate proportion of total reads which mapping is caused by all sources of no-ASE allele ratio imbalances
+	noasepriorlst = []
+	noasevarlst = []
+	for i in xrange(0, len(hapratio)-1):
+		interlocusvar = float(hapratio[i][13])
+		interexonvar = hapratio[i][-1] if type(hapratio[i][-1]) is float else 0 
+		refcnt = int(hapratio[i][5])
+		altcnt = int(hapratio[i][6])
+		totcnt = int(hapratio[i][7])
+		#estimate proportion of total reads mapped due to reference bias
+		reffold = refcnt/altcnt
+		adjreffold = reffold/refabundperloc 
+		refbiascnt = (reffold-adjreffold)*altcnt if reffold > adjreffold else (adjreffold-reffold)*altcnt
+		refbias = refbiascnt/totcnt
+		if 'exonend' in hapratio[i] and len(hapratio[i]) == 20:
+			allvar = interlocusvar + interexonvar + refbias
+			noasevarlst.append(allvar)
+		if 'exonend' in hapratio[i] and len(hapratio[i]) == 21:
+			fusedexonvar = hapratio[i][-1]
+			allvar = interlocusvar + interexonvar + fusedexonvar + refbias
+			noasevarlst.append(allvar)
+		if 'exonend' not in hapratio[i] and len(hapratio[i]) == 18:
+			allvar = interlocusvar + refbias
+			noasevarlst.append(allvar)
+		if 'exonend' not in hapratio[i] and len(hapratio[i]) == 19:
+			interexonvar = hapratio[i][18]
+			allvar = hapratio[i][13] + interexonvar + refbias
+			noasevarlst.append(allvar)
+		if 'exonend' not in hapratio[i] and len(hapratio[i]) == 20:
+			interexonvar = hapratio[i][18]
+			fusedexonvar = hapratio[i][-1]
+			allvar = interlocusvar + interexonvar + fusedexonvar + refbias
+			noasevarlst.append(allvar)
+
+	#Given x which is the maximum of allvar (estimated non-ASE causes of imbalance), emperically estmate prior distribution for models 
+	#of no ASE and ASE from observed allele ratios 
+	#within 0.5-x<0.5<0.5+x and >0.5+x or <0.5-x respectively. 
+	noasemax = 0.5 + max(noasevarlst)
+	noasemin = 0.5 - max(noasevarlst)
+	reprmax = noasemin - 0.01
+	inducmin = noasemax + 0.01
+
+	print noasemax
+	print noasemin
+
+	noasedata = [float(x[10]) for x in hapratio if float(x[10]) <= noasemax and float(x[10]) >= noasemin]
+	reprdata = [float(x[10]) for x in hapratio if float(x[10]) <= reprmax]
+	inducdata = [float(x[10]) for x in hapratio if float(x[10]) >= inducmin]
+		
+	#calculate prior alpha for no ASE and ASE(induction and repression) models using the method of moments
+	noasealpha = ((np.mean(noasedata))**2 * (1 - np.mean(noasedata)) / np.std(noasedata)) - np.mean(noasedata)
+	noasebeta = noasealpha*(1 - np.mean(noasedata)) / np.mean(noasedata)
+	repralpha = ((np.mean(reprdata))**2 * (1 - np.mean(reprdata)) / np.std(reprdata)) - np.mean(reprdata)
+	reprbeta = repralpha*(1 - np.mean(reprdata)) / np.mean(reprdata)
+	inducalpha = ((np.mean(inducdata))**2 * (1 - np.mean(inducdata)) / np.std(inducdata)) - np.mean(inducdata)
+	inducbeta = inducalpha*(1 - np.mean(inducdata)) / np.mean(inducdata)
+	
+	#compare average likelihoods (over all loci of a haplotype) of hap1 read count for each model
+	noaseav = noasealpha / (noasealpha + noasebeta)
+	inducav = inducalpha / (inducalpha + inducbeta)
+	reprav = repralpha / (repralpha + reprbeta)
+	j = 0
+	for i in xrange(0, len(hapratio)-1):
+		i = j
+		if j == len(hapratio)-1:
+			return hapratio
+		noaselkhoodlst = []
+		induclkhoodlst = []
+		reprlkhoodlst = []
+		modlkhoodlst = []
+		while hapratio[j][14] == hapratio[j+1][14]:
+			totcnt = int(hapratio[j][7])		
+			hap1ratio = float(hapratio[j][10])
+			hap1cnt = int(hap1ratio*totcnt)
+			noaselkhood = choose(totcnt, hap1ratio) * noaseav**hap1ratio * (1-noaseav)**(totcnt-hap1ratio)
+			noaselkhoodlst.append(noaselkhood)
+			induclkhood = choose(totcnt, hap1ratio) * inducav**hap1ratio * (1-inducav)**(totcnt-hap1ratio)
+			induclkhoodlst.append(induclkhood)
+			reprlkhood = choose(totcnt, hap1ratio) * reprav**hap1ratio * (1-reprav)**(totcnt-hap1ratio)
+			reprlkhoodlst.append(reprlkhood)
+			j+=1
+			if j == len(hapratio)-1:
+				break
+			if hapratio[j][14] != hapratio[j+1][14]:
+				totcnt = int(hapratio[j][7])		
+				hap1ratio = float(hapratio[j][10])
+				hap1cnt = int(hap1ratio*totcnt)
+				noaselkhood = choose(totcnt, hap1ratio) * noaseav**hap1ratio * (1-noaseav)**(totcnt-hap1ratio)
+				noaselkhoodlst.append(noaselkhood)
+				induclkhood = choose(totcnt, hap1ratio) * inducav**hap1ratio * (1-inducav)**(totcnt-hap1ratio)
+				induclkhoodlst.append(induclkhood)
+				reprlkhood = choose(totcnt, hap1ratio) * reprav**hap1ratio * (1-reprav)**(totcnt-hap1ratio)
+				reprlkhoodlst.append(reprlkhood)
+				break
+
+		avnoaselkhood = np.mean(noaselkhoodlst)
+		avinduclkhood = np.mean(induclkhoodlst)
+		avreprlkhood = np.mean(reprlkhoodlst)
+
+		#calculate Baye's factor as ratio of likelihoods 
+		induclkhdratio = avinduclkhood / avnoaselkhood
+		reprlkhdratio = avreprlkhood / avnoaselkhood
+		modlkhoodlst.extend(avnoaselkhood, avinduclkhood, avreprlkhood)
+		
+		#estimate posterior probability if no ASE model is most likely
+		if max(modlkhoodlst) == avnoaselkhood:
+			j = i
+			while hapratio[j][14] == hapratio[j+1][14]:
+				totcnt = int(hapratio[j][7])		
+				hap1ratio = float(hapratio[j][10])
+				hap1cnt = int(hap1ratio*totcnt)
+				noasealpha += hap1cnt
+				noasebeta  += (totcnt - hap1cnt)
+				postprob = noasealpha / (noasealpha + noasebeta)
+	  			hapratio[j].extend(induclkhdratio, reprlkhdratio)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j+1][14]:	
+					noasealpha += hap1cnt
+					noasebeta  += (totcnt - hap1cnt)
+					postprob = noasealpha / (noasealpha + noasebeta)
+					break
+	  			j = i
+			while hapratio[j][14] == hapratio[j+1][14]:
+				hapratio[j].append(postprob)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j][14]:
+					hapratio[j].append(postprob)
+					break
+				
+		#estimate posterior probability if hap1 induction model is most likely
+		if max(modlkhoodlst) == avinduclkhood:
+			j = i
+			#calculate posterior probability
+			while hapratio[j][14] == hapratio[j+1][14]:
+				totcnt = int(hapratio[j][7])		
+				hap1ratio = float(hapratio[j][10])
+				hap1cnt = int(hap1ratio*totcnt)
+				inducalpha += hap1cnt
+				inducbeta  += (totcnt - hap1cnt)
+				postprob = inducalpha / (inducalpha + inducbeta)
+	  			hapratio[j].extend(induclkhdratio, reprlkhdratio)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j+1][14]:	
+					inducalpha += hap1cnt
+					inducbeta  += (totcnt - hap1cnt)
+					postprob = inducalpha / (inducalpha + inducbeta)
+					break
+
+		#estimate posterior probability if hap1 repression model is most likely
+		if max(modlkhoodlst) == avreprlkhood:
+			j = i
+			#calculate posterior probability
+			while hapratio[j][14] == hapratio[j+1][14]:
+				totcnt = int(hapratio[j][7])		
+				hap1ratio = float(hapratio[j][10])
+				hap1cnt = int(hap1ratio*totcnt)
+				repralpha += hap1cnt
+				reprbeta  += (totcnt - hap1cnt)
+				postprob = repralpha / (repralpha + reprbeta)
+	  			hapratio[j].extend(induclkhdratio, reprlkhdratio)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j+1][14]:	
+					repralpha += hap1cnt
+					reprbeta  += (totcnt - hap1cnt)
+					postprob = repralpha / (repralpha + reprbeta)
+					break
+	  		j = i
+		#append posterior probability and alpha (to be used in case of multi-sample analysis) to each locus
+		while hapratio[j][14] == hapratio[j+1][14]:
+			if max(modlkhoodlst) == avnoaselkhood:
+				hapratio[j].extend(noasealpha, postprob)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j][14]:
+					hapratio[j].extend(noasealpha, postprob)
+					break
+			if max(modlkhoodlst) == avinduclkhood:
+				hapratio[j].extend(inducalpha, postprob)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j][14]:
+					hapratio[j].extend(inducalpha, postprob)
+					break
+			if max(modlkhoodlst) == avreprlkhood:
+				hapratio[j].extend(repralpha, postprob)
+				j+=1
+				if j == len(hapratio)-1:
+					break
+				if hapratio[j][14] != hapratio[j][14]:
+					hapratio[j].extend(repralpha, postprob)
+					break
+		j+=1
+		continue
+
+	#for genes consisting of more than single haplotype, estimate gene-level ASE
+	postproblst = []
+	j = 0
+	n = 0
+	for i in xrange (0, len(hapratio)-1):
+		i = j
+		#introduce new counter to link start of current haplotype to subsequent haplotypes of same gene id
+		k = j
+		#iterate through lines up to the end of haplotype
+		while hapratio[j][14] == hapratio[j+1][14]:
+			j+=1
+			if hapratio[k][14] != hapratio[j+1][14] and hapratio[k][12] == hapratio[j+1][12] \
+					and len(postproblst) == 0:
+				postproblst.append(hapratio[k][-1])
+			#if at the end of a haplotype of a multi-haplotype gene	
+			if hapratio[k][14] != hapratio[j+1][14] and hapratio[k][12] == hapratio[j+1][12]:
+				postproblst.append(hapratio[j][-1])
+				#if estimated posterior haplotype (hap1) ratio averages of haploypes of a single gene range from below 40% to 
+				#above 60%, then it is assumed that hap1 blocks of haplotypes with ratio < 0.4 and those with ratio> 0.6 
+				#arise from separate parents. The ratio of one block will then need to be transformed to align it to same block as the other
+				if max(postproblst) > 0.6 and min(postproblst) < 0.4:
+					[1-x if x < 0.4 else x for x in postproblst]
+					postav = np.mean(postproblst)
+				else:
+					postav = np.mean(postproblst)
+				while k <= j:
+					del hapratio[k][-1] 
+					hapratio[k].append(postav)
+					k+=1
+			#if at the end of the gene	
+			if hapratio[k][14] != hapratio[j+1][14] and hapratio[k][12] != hapratio[j+1][12]:
+				j+=1
+				break
+		continue
+	return [hapratio, noasedata];
+	
+#for single sample analysis
+if sys.argv[7] == "-s":
+	hap1RatioFile2 = prime_fun2(hap1RatioFile2)[0]
+	outp = [[x[12], x[-4], x[-3], x[-1]] for x in hap1RatioFile2]
+	#append output headers
+	headers = ["Gene Id", "Hap1 induction likelihood ratio", "Hap1 repression likelihood ratio", "Hap1 ratio estimate"]
+	outp = [headers + outp[0:]]
+	print outp
+	AllgenesOut = open("Allgenes", 'w+')
+	for i in xrange(0, len(outp)-1):
+		AllgenesOut.write('\t'.join(outp[i]) + "\n")
+		
+
+#for multiple sample analysis
+if sys.argv[7] == "-m":
+	hap1RatioFile2Suplst2 = []
+	for i in xrange(0, len(hap1RatioFile2Suplst1)-1):
+		run_prime_fun2 = pool.map(prime_fun2, hap1RatioFile2Suplst1[i])
+		hap1RatioFile2lst = [x[0] for x in run_prime_fun2]
+		hap1RatioFile2Suplst2.append(hap1RatioFile2lst)
+	
+		#find loci shared by all samples and adjust hap1 ratio values 
+		#if hap1 belong to different haplotypes at the postion
+				
+		#first flatten out hap1RatioFile2lst
+		hap1RatioFile2flat = [x for y in hap1RatioFile2lst for x in y]
+		#then extract loci common to all samples from hap1RatioFile2flat
+		commonloci = [x for x in hap1RatioFile2flat if hap1RatioFile2flat.count(''.join(x[0:1])) == numtrtset] 
 			
-		x = i
-		while a < x:
-			a += 1
-		x1 = a
-		x1 += 1
-               	z += 1           
-        	x += 1
-		j = 1
-		k += 1
-		v += 1
-		cisproblst = []
-		ARPproblst = []       
-    	if i == len(hap1RatioFile2)-1:  
-     		break
+		#remove duplicates in 'commonloci' thereby thinning it down (to an unordered list)
+		commonloci = list(Set(commonloci))
+		
+		#now recreate components of hap1RatioFile2lst to contain only the common loci
+		def re_create(hapfile):
+			newlst = [x for x in hapfile if x in commonloci] 
+			return newlst;
+		hap1RatioFile2lst = pool.map(re_create, hap1RatioFile2lst)
+		pool.close()
+		pool.join()   
+		
+		#ensure the common loci belong to same haplotype block across samples. Do this by comparing haplotype blocks which the 
+		#reference allele belong to in sample and reference sample. If this varies between a sample and the reference sample, 
+		#adjust and replace the exsting hap1 ratio.
+		def adj_hapratio(hapfile):
+			adj_hapfile = [x[0:9]+1-float(x[10])+x[11:] if x[8] == hap1RatioFile2lst[0][idx][8] else x[10] for idx, x in enumerate(hapfile)]
+		hap1RatioFile2lst = pool.map(adj_hapratio, hap1RatioFile2lst)
 
-#Model proabilities calculated from disparity ratio as beta distribution for use as prior in Bayes Inference problem
-cisAvlst = [numpy.mean(x) for x in cislst]
-cisvarlst = [numpy.var(x) for x in cislst]
-cisalpha = [(i**2*(1-i)/j) - i for i in cisAvlst for j in cisvarlst]
-cisbeta = [x*(1-y)/y for x in cisalpha for y in cisAvlst]
+		#calculate prior parameters of a beta or dirichlet distribution under the assumption of 
+		#no ASE i.e condition where hap1 ratios are ideally a=b=0.5 for two samples or a=b..=n=1/n for n samples
+		#Use alpha values from both samples as hyperparameter components, to estimate probability of each sample's posterior 
+		#prob (used as input for multi-sample analysis) given prior alpha hyperparameters of samples and hyperparameters estimated from their posterior
 
-ARPAvlst = [numpy.mean(x) for x in ARPlst]
-ARPvarlst = [numpy.var(x) for x in ARPlst]
-ARPalpha = [(i**2*(1-i)/j) - i for i in ARPAvlst for j in ARPvarlst]
-ARPbeta = [x*(1-y)/y for x in ARPalpha for y in ARPAvlst]
-
-biasprobAv = numpy.mean(biasproblst)
-biasprobvar = numpy.var(biasproblst)
-biasalpha = (biasprobAv**2*(1-biasprobAv)/biasprobAv) - biasprobAv
-biasbeta = biasalpha*(1-biasprobAv)/biasprobAv
-
-#Estimate posterior probability of alternative RNA processing 
-x = 0
-j = 0
-z = 0
-for i in range(0, len(hap1RatioFile2)):
-    y = 1
-    i = z
-    if i < len(hap1RatioFile2)-1 and (hap1RatioFile2[i][9] == hap1RatioFile2[i+1][9] or hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]):  	
-	disparitycount = 0
-	paritycount = 0
-	ARPalpha = ARPalpha[j]
-	ARPalpha1 = ARPalpha[j]
-	ARPbeta = ARPbeta[j]
-	ARPbeta1 = ARPbeta[j]
-	while hap1RatioFile2[x][9] == hap1RatioFile2[i+1][9]:
-		HAcount = int(hap1RatioFile2[i][6]) if float(hap1RatioFile2[i][6])/int(hap1RatioFile2[i][7]) > 0.5 else int(hap1RatioFile2[i][5])
-		ARPalpha1 = disparitycount+ARPalpha1
-                ARPbeta1 = paritycount+ARPbeta1
-		disparitycount = float(hap1RatioFile2[i][12])*HAcount
-		disparitycount = int(round(disparitycount))
-		paritycount = HAcount - disparitycount
-		ARPposterior = float(ARPalpha1+disparitycount-1)/int(ARPalpha1+ARPbeta1+HAcount-2) 
-                z += 1
-                i += 1
-	x = i
+		noasedatalst = [x[1] for x in run_prime_fun2]
+		nodiffalphalst = [(((np.mean(noasedata))**2 * (1 - np.mean(noasedata)) / np.std(noasedata)) - np.mean(noasedata)) for noasedata in noasedatalst]
+		noasealphasum = np.sum(nodiffalphalst)
+		noaseaphaprod = np.prod([gamma(x) for x in nodiffalphalst])
 	
-        if x == i and hap1RatioFile2[i][9] != hap1RatioFile2[i+1][9] and hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]:
-            ARPposteriorlst.append(str(ARPposterior))
-        z += 1
-        x = i
-        x += 1
-        j += 1
-    if i == len(hap1RatioFile2)-1:  
-	     break
+		#calcuate and append new hap1 ratios adjusted to allow hap1 ratios of compared samples to sum to 1. 
+		#The adjustment is adj_ratio_sample1 = ratio_sample1 / (ratio_sample1 +...+ ratio_sampleN)
+		#sum hap1 ratio for all samples
+		hap1ratiosum = 0
+		idx = 0
+		while idx < len(hap1RatioFile2lst):
+			hap1ratiosum+=float(hap1RatioFile2lst[idx][10])
+			idx+=1
+				
+		#adjust and append adjusted hap1 ratios
+		hap1RatioFile2lst = [x+(x[10]/hap1ratiosum) for x in hap1RatioFile2lst]
 
-#Estimate posterior probability of reference bias
-x = 0
-j = 0
-z = 0
-for i in range(0, len(hap1RatioFile2)):
-    y = 1
-    i = z
-    if i < len(hap1RatioFile2)-1 and (hap1RatioFile2[i][9] == hap1RatioFile2[i+1][9] or hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]):  	
-	disparitycount = 0
-	paritycount = 0
-	biasalpha1 = biasalpha
-	biasbeta1 = biasbeta[j]
-	while hap1RatioFile2[x][9] == hap1RatioFile2[i+1][9]:
-		HAcount = int(hap1RatioFile2[i][6]) if float(hap1RatioFile2[i][6])/int(hap1RatioFile2[i][7]) > 0.5 else int(hap1RatioFile2[i][5])
-		biasalpha1 = disparitycount+biasalpha1
-                biasbeta1 = paritycount+biasbeta1
-		disparitycount = float(hap1RatioFile2[i][12])*HAcount
-		disparitycount = int(round(disparitycount))
-		paritycount = HAcount - disparitycount
-		biasposterior = float(biasalpha1+disparitycount-1)/int(biasalpha1+biasbeta1+HAcount-2) 
-                z += 1
-                i += 1
-	while x < i: 
-                x += 1
-	
-        if x == i and hap1RatioFile2[i][9] != hap1RatioFile2[i+1][9] and hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]:
-            biasposteriorlst.append(str(biasposterior))
-        z += 1
-        x = i
-        x += 1
-        j += 1
-    if i == len(hap1RatioFile2)-1:  
-	     break
-                                                                           
-print ARPposteriorlst
-print biasposteriorlst
-                                                                           
-#Estimate posterior probability of cis variation-mediated haplotype imbalance
-k = 0
-x = 0
-j = 0
-z = 0
-for i in range(0, len(hap1RatioFile2)):
-    y = 1
-    i = z
-    if i < len(hap1RatioFile2)-1 and (hap1RatioFile2[i][9] == hap1RatioFile2[i+1][9] or hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]):
-        disparitycount = 0
-	paritycount = 0
-	cisalpha = cisalpha[j]
-	cisalpha1 = cisalpha
-	cisbeta = cisbeta[j]
-	cisbeta1 = cisbeta
-	while hap1RatioFile2[x][9] == hap1RatioFile2[i+1][9]:
-		HAcount = int(hap1RatioFile2[i][6]) if float(hap1RatioFile2[i][6])/int(hap1RatioFile2[i][7]) > 0.5 else int(hap1RatioFile2[i][5])
-		cisalpha1 = disparitycount+cisalpha1
-                cisbeta1 = paritycount+cisbeta1
-		disparitycount = float(hap1RatioFile2[i][12])*HAcount
-		disparitycount = int(round(disparitycount))
-		paritycount = HAcount - disparitycount
-		cisposterior = float(cisalpha1+disparitycount-1)/int(cisalpha1+cisbeta1+HAcount-2) 
-                z += 1
-                i += 1	
-	while x < i: 
-                x += 1
-        if x == i and hap1RatioFile2[i][9] != hap1RatioFile2[i+1][9] and hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]:         
-            lrt = float(ARPposteriorlst[k])/cisposterior if cisposterior > 0 else 0
-            lrt1 = float(biasposteriorlst[k])/cisposterior if cisposterior > 0 else 0 
-	    hap1RatioFile2[i].append(str(lrt))
-            hap1RatioFile2[i].append(str(lrt1))
-	    k += 1
-            AllgenesOut.write('\t'.join(hap1RatioFile2[i]) + "\n")
-        z += 1
-        x = i
-        x += 1
-        j += 1
-    if i == len(hap1RatioFile2)-1:  
-	     break
+		#having determined no difference and difference hyperparameters for the samples (from their separate one-sample analysis) 
+		#proceed to calculate probability of posterior ratios under each hypothesis
+		if numtrtset == 2:
+			def pergene_postprob(hapfile): 
+				return [[x[12]] + x[-1] for i, x in enumerate(hapfile) if x[12] != hapfile[i+1][12]];
+			def pergene_postalpha(hapfile):
+				return [[x[12]] + x[-3] for i, x in enumerate(hapfile) if x[12] != hapfile[i+1][12]];
+			problst_pergene = pool.map(pergene_postprob, hap1RatioFile2lst)
+			alphalst_pergene = pool.map(pergene_postalpha, hap1RatioFile2lst)
+			
+			def post_problst(problst):
+				return [ln[1] for ln in hapratiolst];
+			def post_alphalst(alphalst):
+				return [ln[1] for ln in hapratiolst];
+			post_problst1 = pool.map(post_problst, problst_pergene)
+			post_alphalst1 = pool.map(post_alphalst, alphalst_pergene)
+			
+			sum_post_alphalst = np.sum([[x[ln][idx] for x in post_alphalst] for ln in x ) 
 
-#Iterate through new hap ratio file and output only for ASE genes
-for i in range(0, len(hap1RatioFile2)):	
-	if i < len(hap1RatioFile2)-1 and (hap1RatioFile2[i][9] == hap1RatioFile2[i+1][9] or hap1RatioFile2[i][9] == hap1RatioFile2[i-1][9]):
-		if len(hap1RatioFile2[i]) > 12 and float(hap1RatioFile2[i][13]) <= 0.67 and float(hap1RatioFile2[i][14]) <= 0.67:
-			ASEgenesOut.write('\t'.join(hap1RatioFile2[i]) + "\n")  
-    	if i == len(hap1RatioFile2)-1:  
-	     break
+			#calculate probability of 'true' hap1 ratio (posterior prob) given hypothesis of no difference between 
+			#samples (represented by set of prior alphas of samples) using generalisation of beta distribution 
+			postprob_nodiff = gamma(sum_post_alphalst)/np.prod([gamma(i[1]) for i in post_alphalst]) * np.prod([gamma(i[1])** for i in post_problst])
+			for x in xrange(hap1RatioFile2lst)-1:
+				i = 0
+				while hap1RatioFile2lst[x][i][14] == hap1RatioFile2lst[x][i+1][14]:
+					nodiffprob = gamma(np.sum(
+
+	del hap1RatioFile2Suplst1	
+			 
+
+if __name__ == "__main__":
+	sys.exit(main())
+
+
