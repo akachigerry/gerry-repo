@@ -1,0 +1,629 @@
+#!/usr/bin/python
+import sys, getopt
+import itertools
+from itertools import imap, starmap, izip
+from multiprocessing import Pool
+from multiprocessing import Process, Queue, cpu_count, sharedctypes, Manager
+from multiprocessing.dummy import Pool as ThreadPool 
+import inspect
+import random
+import counter
+import re
+import operator
+from ctypes import *
+from multiprocessing.sharedctypes import Array
+from collections import deque
+
+
+
+def input_arg(argv):
+    FastqFile = ''
+    WordSize = ''
+    try:
+        opts, args = getopt.getopt(argv,"hf1:f2:k:rl:")
+    except getopt.GetoptError, err:
+        print str(err)
+        usage()
+        sys.exit(2)
+    for opt, arg in opts:
+        if opt == '-h':
+            print 'my_Assembler.py -f1 <FastqFile1> -f2 <FastqFile2> -k <WordSize>'
+            sys.exit()
+        elif opt in ("-f1"):
+            FastqFile1 = arg
+	elif opt in ("-f2"):
+		FastqFile2 = arg
+        elif opt in ("-k"):
+            WordSize = arg
+        
+input_arg(sys.argv[1:])
+            
+linecnt = 0
+qualst = []
+fastq_inp = open(sys.argv[2])
+readcnt = 0
+#define a dictionary with reads as keys and count of read occurences as values
+reads=dict()
+k=int(sys.argv[6])
+
+#define a node class which holds the sink(s) of a source.
+#there are two label attributes for this class because no source should
+#have more than two sinks. This requirement is necessary in order to
+#simplify the task of finding the Eulerian path.
+class Node:
+    def __init__(self, par):
+        self.label1 = par
+        self.label2 = ''
+	self.indegree1 = 0
+	self.indegree2 = 0
+
+def prep_reads(reads):
+    readlst = []
+    for i in xrange(len(reads)):
+        read = reads[i].rstrip('\n')
+        if ''.join(sorted(set(list(read)))) == 'ACGT':
+            readlst.append(read)
+	    continue
+        if ''.join(sorted(set(list(read)))) == 'ACGNT':
+	    read1 = ''
+	    for i in xrange(len(read)):
+		if read[i] == 'N':
+		    read1+='A'
+		else:
+		    read1+=read[i]
+	    readlst.append(read1)
+    return readlst;
+
+def read_index_pair(read):
+    looplen = len(read)-(k+1)
+    loop_range = range(looplen)
+    readlst = [read]*looplen
+    return zip(readlst, loop_range);
+
+
+def create_words(read):
+    looplen = len(read)-(k+1)
+    return [(read[x:x+k], read[x+1:x+1+k]) for x in xrange(looplen)];
+
+#round count of outgoing edges per source word to the nearest multiple of 5.
+def round_mult5(value):
+    cnt = int(5 * round(float(value)/5))
+    return cnt;	
+
+#generate freq of use numbers of source-to-sink outword connections, counted above.
+#This is necessary to estimate the least connection size which is most frequent.
+def edge_freq(x):
+    return x.indegree;
+
+
+def class2list(x):
+    if isinstance(entire_graph[x], list) == False:
+        entire_graph[x] = [entire_graph[x]]
+
+def suffixArray(s):
+	#Given T return suffix array SA(T). We use Python's sorted
+	#function here for simplicity, but we can do better.
+	# Empty suffix '' plays role of $.
+	satups = sorted([(s[i:], i) for i in xrange(0, len(s)+1)])
+	# Extract and return just the offsets
+	return map(lambda x: x[1], satups)
+
+def bwt(t):
+	#Given T, returns BWT(T), by way of the suffix array.
+	bw = []
+	for si in iter(suffixArray(t)):
+		if si == 0:
+			bw.append('$')
+		else:
+			bw.append(t[si-1])
+	return bw;
+
+def rankBwt(bw):
+	#Given BWT string bw, returns a parallel list of B-ranks. Also
+	#returns tots, a mapping from characters to # times the
+	#character appears in BWT.
+	tots = dict()
+	seen = dict()
+	grp = 0
+	lastchar = ''
+	for c in iter(bw):
+            if c not in seen.keys():
+                grp=1
+                seen[c] = grp
+                tots[c+str(grp)] = 1
+                lastchar = c
+            if c in seen.keys() and c == lastchar:
+                tots[c+str(grp)]+=1
+                lastchar = c
+            if c in seen.keys() and c != lastchar:
+                grp = seen[c]+1
+                tots[c+str(grp)] = 1
+                lastchar = c
+                seen[c]+=1
+	return tuple(tots.items());
+
+def firstCol(tots):
+	#Return a map from characters to the range of cells in the first
+	#column containing the character.
+	first = {}
+	startpos = 0
+	for c, count in sorted(iter(tots)):
+            if c[0] in first.keys():
+                startpos+=count
+            if c[0] not in first.keys():
+                first[c[0]] = startpos
+                startpos+=count
+	return first
+
+def reverseBwt(bw, first):
+	rowi = 0
+	t = "$"
+	seen = ''
+	bwranks = []
+	for c in iter(bw):
+            if c in seen:
+                rank = seen.count(c)
+                bwranks.append((c, rank))
+                seen+c
+            if c not in seen:
+                rank = 0
+                bwranks.append((c, rank))
+                seen+c
+	while bw[rowi][1] != '$':
+	    c = bw[rowi]
+	    t = c + t
+	    rowi = first[c]+bwranks[rowi][0]
+	return t;
+
+def uncompress(tup):
+        #step1:reproduce a bwt string from the compressed dictionary form
+        src_bw = ''
+        for innertup in iter(tup):
+            c = innertup[0][0]*innertup[1]
+            src_bw += c
+        #step2: reproduce original sting from bwt string
+        first_dic = firstCol(tup)
+        string = reverseBwt(src_bw, fisrt_dic)
+        return string;
+    
+#next, generate contig
+def contig_gen(source):
+    #start building contigs from source strings with only outgoing edges
+    contig = source
+    current = source
+    for x in xrange(len(graph.keys())): 
+        if current in graph.keys():
+	    #pick next node(s) to be traversed (label1, then label2)
+            if len(graph[current].label1) > 0:
+                nxt = graph[current].label1
+            else:
+                print contig
+                return contig;
+            #test if current could be start of a repeat loop by checking if it has
+            #greater than or equal to two edge unit connections to its label1 sink
+            looptest = 0
+            if int(round(graph1[current].indegree1/depth)) >= 2:
+                    looptest+=1
+                    break
+
+            if looptest == 0:
+                #check label1 (i.e nxt) of the source 'current' for potential of being a source.
+                #This potential depends on the sink having outgoing connection to sink(s).
+                newcurrent = 0
+		if nxt in graph.keys():
+                        contig+=nxt[-1]
+                        graph[current].label1 = ''
+			current = nxt	
+                        nxt = graph[current].label1
+                        continue
+                else:
+                    print contig
+                    return contig;
+            if looptest > 0:
+                #check if the source word named 'current'
+                #is the start of a repeat loop block. Do this by checking if number
+                #of its connection to its first sink is greater than double the depth.        
+                loopstart = current
+                cnt = 0
+                repeatcnt = 0
+                #create a loop through source-sink edges in order to confirm the repeat sequence.
+                #The number of passes through the loop should be determined from the
+                #max number of repeat monomers(N) obtainable in a plant or animal genome
+                #and the k-word length (k) as follows: N-(k+2). The result is approximated to the
+                #closest higher integer.
+                yesRepeat = 0
+                for x in xrange(400):
+                    if nxt in graph.keys():
+                            #if loopstart is equal to nxt of next sink
+                            if loopstart == graph[nxt].label1:
+                                yesRepeat+=1
+                                contig+=nxtlst[i][-1]
+                                source = nxt
+                                graph[current].label1=''
+                                numRepeat = int(round(graph[source].indegree1/depth))+1
+                                contig = contig*numRepeat
+                                #delete the 'loopstart' sink of nxt before continuing contig extension from main loop.
+                                #this will prevent potential of unnecessarily trasversing the repeat monomer again given that
+                                #the entire repeat sequence has already been estimated from its monomer.
+                                current = source
+                                nxt = graph[current].label1
+                                break
+                                
+                    else:
+                        print contig
+                        return contig;
+                
+                    if yesRepeat == 0:
+                        #else, make the first sink which is in turn a source of some other sink(s),
+                        #the new current and continue through the (400X) loop.
+                        if nxt in graph.keys():
+                                if len(graph[nxt].label1) > 0:
+                                    contig+=nxt[-1]
+                                    graph[current].label1=''
+                                    current = nxt
+                                else:
+                                    print contig
+                                    return contig;         
+                        else:
+                            print contig
+                            return contig;                                  
+    return contig;
+
+	
+def tuple2dict(item):
+    dic={}
+    source = item[0][0]
+    sink = item[0][1]
+    dic.setdefault(source, {})[sink]=item[1]
+    return dic;
+
+
+def wordCompress(tup):
+    source_bwt = bwt(tup[0])
+    source_bwt = rankBwt(source_bwt)
+    
+    sink_bwt = bwt(tup[1])
+    sink_bwt = rankBwt(sink_bwt)
+    compdict[(source_bwt, sink_bwt)] = wordlst[tup]
+    
+
+#define function to get input from queue and put output to it.
+def fun(f, X, q_in, q_out):
+    while True:
+        itm = q_in.get()
+        if itm is None:
+            break
+        q_out.put(f(itm))
+
+def parmap(f, X, nprocs=cpu_count()):
+    q_in = Queue()
+    q_out = Queue()
+    proc = [Process(target=fun, args=(f, X, q_in, q_out)) for n in xrange(nprocs)]
+    for n in xrange(nprocs):
+        proc[n].daemon = True
+        proc[n].start()
+
+    sent = list(q_in.put(itm) for itm in X)
+    [q_in.put(None) for i in xrange(nprocs)]
+    res = list(q_out.get() for i in xrange(len(sent)))
+
+    [proc[n].join() for n in xrange(nprocs)]
+    print len(res)
+    return res;
+
+
+#instance of class takes in a generator (which yields k, v tuples) and builds a dictionary-like class object on the fly.
+#This is a more memory-efficient way of building a dictionary
+class LazyDict():
+    """A dictionary built on demand from an iterator."""
+    def __init__(self, iterator):
+        self._dict = dict(iterator)
+        self._iterator = iterator
+    def __getitem__(self, key):
+        if key in self:
+            return self._dict[key]
+        else:
+            raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        return self._dict__setitem__(key, value)
+    
+    def keys(self): 
+        return self._dict.keys()
+    
+    def iterkeys(self): 
+        return self._dict.iterkeys()
+
+    def values(self):
+ 	      return self._dict.values()
+
+    def itervalues(self):
+ 	      return self._dict.itervalues()
+
+    def items(self):
+ 	      return self._dict.items()
+
+    def iteritems(self):
+ 	      return self._dict.iteritems()
+
+    def update(self, iterator):
+        return self._dict.update(self._iterator)
+    
+    #__contain__ is an abstract base class implementation of
+    #'in' used in __getitem__ method above
+    def __contains__(self, key):
+        if key in self._dict:
+            return True
+        else:
+            return False
+
+
+fastq_inp1 = open(sys.argv[2])
+fastq_inp2 = open(sys.argv[4])
+fastq1 = itertools.islice(fastq_inp1, 1, None, 4)
+fastq2 = itertools.islice(fastq_inp2, 1, None, 4)
+del fastq_inp1, fastq_inp2
+fastqall = []
+fastqall.extend(fastq1)
+fastqall.extend(fastq2)
+print len(fastqall)
+del fastq2, fastq1
+
+chunksize = int(round(len(fastqall)/cpu_count()))
+print chunksize
+print cpu_count()
+
+def chunking(lst):
+    z=0
+    chunklst = []
+    for i in xrange(cpu_count()+1):
+        chunk = list(itertools.islice(lst[z:], chunksize))
+        chunklst.append(chunk)
+        z+=chunksize
+        if z >= len(lst) - chunksize:
+            if z >= len(lst):
+                return chunklst;
+            else:
+                chunklst.append(lst[z:])
+                return chunklst;
+    return chunklst;
+
+fastqall_chunk = chunking(fastqall)
+print len(fastqall_chunk[0])
+print len(fastqall_chunk)
+print sys.getsizeof(fastqall_chunk)
+
+pool = Pool(cpu_count())
+wordlst=[]
+for result in pool.imap(prep_reads, fastqall_chunk):
+    wordGen = (create_words(read) for read in result)
+    resultLen=len(result)
+    print resultLen
+    for i in xrange(resultLen):
+        wordlst.extend(wordGen.next())
+pool.close()
+pool.join()
+
+del fastqall_chunk
+#define the function 'trim' to remove source words having total of 2 or less edge connections to a sink
+def trim(itm):
+    if itm[1] > 2:
+        return itm;
+
+print "size of wordlst is", sys.getsizeof(wordlst)
+
+#break fastq files into chunks, then loop throuugh list of chunks creating words for each loop.
+#a dynamic chunking is utilised to maximize available system memory and processes for speedy execution.
+wordlst=counter.Counter(wordlst).most_common()
+print wordlst[0:3]
+
+pool = Pool(20)
+wordlst1 = pool.map(trim, wordlst)
+pool.close()
+pool.join()
+print len(wordlst1)
+del wordlst
+
+src2sink_cnt = []
+allsinks = []
+graph = {}
+looptracker=0
+for i in xrange(len(wordlst1)):
+    looptracker+=1
+    item = wordlst1[i]
+    if item != None:
+        source = item[0][0]
+        sink = Node(item[0][1])
+        if source not in graph.keys():
+            allsinks.append(item[0][1])
+            sink.indegree1 += int(item[1])
+            graph[source] = sink
+            src2sink_cnt.append(int(item[1]))
+            continue
+        else:
+            if graph[source].label2 == '':
+                allsinks.append(item[0][1])
+                graph[source].label2 += item[0][1]
+                graph[source].indegree2 += int(item[1])
+                src2sink_cnt.append(int(item[1]))
+            else:
+                print 'maximum number(2) of unique sinks allowed for each source has been reached'            
+
+print graph.items()[0:3]
+print len(src2sink_cnt)
+def merge_dic(diclst):
+    dic=dict()
+    cnt=0
+    for d in diclst:
+        if cnt == 0:
+            dic.update(d)
+        else: 
+            dickeys = dic.keys()
+            next_dickeys = d.keys()
+            common_dickeys = list(set(dickeys).intersection(set(next_dickeys)))
+	    diff_dickeys = list(set(dickeys).difference(set(next_dickeys)))
+            if len(common_dictkeys) == 0:
+		dic.update(d)
+            else:
+                for key in iter(diff_dickeys):
+		    unitdic = {key:diff_dickeys[key]}
+                    dic.update(unitdic)
+		
+		#for set of keys common between new dictionary and current merged dictionary 
+		for key in iter(common_dictkeys):
+		    next_val_of_val = d[key].values()
+		    next_key_of_val = d[key].keys()
+		    if next_value != dic[key]:
+			
+                        graph2[tupl]+=next_value            
+    
+    
+#generate a dictionary from the list of source-sink tuples(wordlst)        
+    #the list should have source strings as key. Values for each of these
+    #must hold all unique sinks of a source        
+#To fulfill the above, define a function holds the tuple in
+#a dictionary as follows:        
+    #source as main dictionary key
+    #all sinks of the source as a sub-dictionary consisting of each unique
+    #sink of the source as key and a number, reflecting the sink's frequeny
+    #as value.
+
+chunksize = int(round(len(src2sink_cnt)/cpu_count()))
+pool = Pool(cpu_count())	                     	
+src2sink_cnt = pool.imap_unordered(round_mult5, src2sink_cnt, chunksize)
+pool.close()
+pool.join()
+
+src2sink_cnt = counter.Counter(src2sink_cnt)
+print len(src2sink_cnt)
+kmatchFreq_dict = LazyDict(src2sink_cnt)
+
+#sort above dictionary
+kmatchFreq_dict = sorted(kmatchFreq_dict.items(), key=operator.itemgetter(1), reverse=True)
+print kmatchFreq_dict
+#The most frequent kword matches (number of source-to-sink connections)
+#should represent the approximate sequencing depth.
+kmatchFreq_dict = LazyDict(src2sink_cnt)
+depth = kmatchFreq_dict[0][0]
+del src2sink_cnt
+print depth
+
+                    
+#Now to the next stage: trace a Eularian path through the graph
+#first off, generate list of contig start strings which will be used as input.
+
+
+#after removing edges potentially arising from seq error (trim function),
+#source words with more than one unique sink could result from one of two situations:
+#1. existence of alleles of same locus
+#2. existence of genome segment copies or paralogs on different loci of same chromosome
+#the first case is not tolerable for contig generation as it could result in contigs
+#containing homologous haplotype segments in adjacent positions. For this reason,
+#the graph is prunned to remove instances of the first case.
+#the second case is tolerable iff the difference between indegree and outdegree for the node is not greater than unity (1).
+
+cnt = 0
+cntmin = -1
+prevkeylst = []
+startsources = deque()
+secondBranchStartList = []
+graphkeys=graph.iterkeys()
+for key in graphkeys:
+    #define a 'futre key i.e the sink to the current source or the next source after the current (futkey)'
+    #to allow a more accurate check of whether node split points (outgree - indgree =1)
+        #indicate potential heterozygotes or not
+    futkey = graph[key].label1
+    src_in_sinkcnt = allsinks.count(futkey)
+    src_in_sinkcnt1 = allsinks.count(key)
+    if futkey in graph.keys():
+        if graph[futkey].label2 != '':
+            currentEdge = graph[key].indegree1
+            futureEdge1 = graph[futkey].indegree1
+            futureEdge2 = graph[futkey].indegree2
+            #to check if a source connection to multiple sinks is due to het alleles:
+                #1. their must be 2 sinks connected to the source
+                #2. number of edges (connections) to the source must be approximately equal to sum for both sinks
+                #3. number of edges must be approximately half of the estimated depth
+            if int(round(futureEdge1/graph[futkey].indegree2)) == 1 and \
+                       int(currentEdge/futureEdge1) >= 1.5 and \
+                            int(currentEdge/futureEdge1) <= 2.5:
+                #the seconnd sink is eliminated if above test for heterozygosity is confirmed. While not useful for strict genome assembly as here,
+                #the above heterozygosity test would be invaluable for assemmbly of haplotypes and for reference-free variant extraction.
+                graph[futkey].label2 = ''
+                                        
+    #Define potential contig starts. These would be source words not found in sinklist and
+    #label2 of branch nodes. This label2 must however be a source itself
+    if (src_in_sinkcnt1 == 0 and graph[key].label2 == '') or (src_in_sinkcnt1 == 1 and graph[key].label2 != ''):
+        #use appendleft property of deque to ensure that the starting word for the genome (source not found in sink list)
+        if (src_in_sinkcnt1 == 0 and graph[key].label2 == ''):
+            startsources.appendleft(key)
+        if (src_in_sinkcnt1 == 1 and graph[key].label2 != ''):
+            if graph[key].label2 in graph.keys():
+                startsources.append(graph[key].label2)
+                secondBranchStartList.append(graph[key].label2)
+        
+del graphkeys   
+print len(startsources)
+#define function to put input data into queue, define specific number
+#of processes for analysing each component of this data 
+#(according to a pre-defined function) and output the result in queue
+
+contiglst = []
+pool=Pool(cpu_count())
+if cpu_count() >= len(startsources) or int(round(len(startsources)/cpu_count())) < 2:
+    for result in pool.imap_unordered(contig_gen, startsources):
+        contigs =[result, len(result)]
+        contiglst.append(result)
+    pool.close()
+    pool.join()
+if int(round(len(startsources)/cpu_count())) >= 2:
+    for result in pool.imap_unordered(contig_gen, startsources, int(round(len(startsources)/cpu_count()))):
+        contigs = [result, len(result)]
+        contiglst.append(result)
+    pool.close()
+    pool.join()
+print "length of contiglst before contig lengthning", len(contiglst)
+    
+#go through the contig list and search for branching nodes(sources) and use these as
+#inter-contig connections to lengthen contigs
+newcontiglst=[]
+allcontig = '_'.join(contiglst)
+for i in xrange(len(secondBranchStartList)):
+    longcontig = ''
+    #branchnode will be the entire length of a secondBranchStartList item except for last base.
+    #this strategy will ensure that the source word for the branching label2 sinks, from which secondBranchStartList items
+    #were populated, can be found and the branch contig extended toward the 5' direction.
+    branchnode = secondBranchStartList[i][0:-1]
+    if branchnode in allcontig:
+            branchstart = allcontig.find(branchnode)
+            #avoid matches at start of contig as they are branch node. interest is
+            #in longer contigs that incorporate source of branch node start (label2)
+            #somewhere along its length.
+            if branchstart == 0:
+                newcontiglst.append(secondBranchStartList[i])
+                continue
+            addcontig = allcontig[0:branchstart-1].split('_')[-1]
+            longcontig = addcontig + secondBranchStartList[i]
+            newcontiglst.append(longcontig)
+    else:
+            newcontiglst.append(secondBranchStartList[i])
+
+with open("contig_out2", 'w') as outfile:
+    contiglen=[]
+    for itm in newcontiglst:
+        outfile.write('\t'.join([itm, len(itm)]))
+        contiglen.append(len(itm))
+
+#calculate N50
+halfassem = int(round(sum(contiglen)/2))
+n50 = 0
+contiglist = sorted(contiglen, reverse=True)
+for num in iter(contiglist):
+    if n50 < halfassem:
+        n50+=num
+    else:
+        break
+
+print "N50 =", n50
+
+
